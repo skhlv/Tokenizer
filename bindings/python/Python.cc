@@ -3,6 +3,7 @@
 #include <sstream>
 
 #include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
 
 #include <onmt/Tokenizer.h>
 #include <onmt/BPE.h>
@@ -12,40 +13,6 @@
 #include <onmt/SPMLearner.h>
 
 namespace py = pybind11;
-
-#if PY_MAJOR_VERSION < 3
-#  define STR_TYPE py::bytes
-#else
-#  define STR_TYPE py::str
-#endif
-
-template <typename T>
-std::vector<T> to_std_vector(const py::list& list)
-{
-  std::vector<T> vec;
-  vec.reserve(list.size());
-  for (const auto& item : list)
-    vec.emplace_back(item.cast<T>());
-  return vec;
-}
-
-template <typename T>
-py::list to_py_list(const std::vector<T>& vec)
-{
-  py::list list;
-  for (const auto& elem : vec)
-    list.append(elem);
-  return list;
-}
-
-template<>
-py::list to_py_list(const std::vector<std::string>& vec)
-{
-  py::list list;
-  for (const auto& elem : vec)
-    list.append(STR_TYPE(elem));
-  return list;
-}
 
 template <typename T>
 T copy(const T& v)
@@ -74,19 +41,16 @@ public:
 
   TokenizerWrapper(const std::string& mode,
                    const std::string& bpe_model_path,
-                   const std::string& bpe_vocab_path,
-                   int bpe_vocab_threshold,
-                   std::string vocabulary_path,
-                   int vocabulary_threshold,
                    const std::string& sp_model_path,
                    int sp_nbest_size,
                    float sp_alpha,
+                   const std::string& vocabulary_path,
+                   int vocabulary_threshold,
                    const std::string& joiner,
                    bool joiner_annotate,
                    bool joiner_new,
                    bool spacer_annotate,
                    bool spacer_new,
-                   bool case_feature,
                    bool case_markup,
                    bool no_substitution,
                    bool preserve_placeholders,
@@ -94,7 +58,7 @@ public:
                    bool segment_case,
                    bool segment_numbers,
                    bool segment_alphabet_change,
-                   py::list segment_alphabet)
+                   const std::vector<std::string>& segment_alphabet)
   {
     onmt::SubwordEncoder* subword_encoder = nullptr;
 
@@ -102,13 +66,6 @@ public:
       subword_encoder = new onmt::SentencePiece(sp_model_path, sp_nbest_size, sp_alpha);
     else if (!bpe_model_path.empty())
       subword_encoder = new onmt::BPE(bpe_model_path, joiner);
-
-    if (vocabulary_path.empty())
-    {
-      // Backward compatibility.
-      vocabulary_path = bpe_vocab_path;
-      vocabulary_threshold = bpe_vocab_threshold;
-    }
 
     if (subword_encoder && !vocabulary_path.empty())
       subword_encoder->load_vocabulary(vocabulary_path, vocabulary_threshold);
@@ -122,8 +79,6 @@ public:
       flags |= onmt::Tokenizer::Flags::SpacerAnnotate;
     if (spacer_new)
       flags |= onmt::Tokenizer::Flags::SpacerNew;
-    if (case_feature)
-      flags |= onmt::Tokenizer::Flags::CaseFeature;
     if (case_markup)
       flags |= onmt::Tokenizer::Flags::CaseMarkup;
     if (no_substitution)
@@ -145,60 +100,29 @@ public:
                                          joiner);
 
     for (const auto& alphabet : segment_alphabet)
-      tokenizer->add_alphabet_to_segment(alphabet.cast<std::string>());
+      tokenizer->add_alphabet_to_segment(alphabet);
 
     _tokenizer.reset(tokenizer);
   }
 
-  py::tuple tokenize(const std::string& text) const
+  std::vector<std::string> tokenize(const std::string& text) const
   {
     std::vector<std::string> words;
-    std::vector<std::vector<std::string> > features;
-
-    _tokenizer->tokenize(text, words, features);
-
-    py::list words_list = to_py_list(words);
-
-    if (features.empty())
-      return py::make_tuple(words_list, py::none());
-    else
-    {
-      std::vector<py::list> features_tmp;
-      features_tmp.reserve(features.size());
-      for (const auto& feature : features)
-        features_tmp.emplace_back(to_py_list(feature));
-
-      return py::make_tuple(words_list, to_py_list(features_tmp));
-    }
+    _tokenizer->tokenize(text, words);
+    return words;
   }
 
-  py::tuple detokenize_with_ranges(const py::list& words, bool merge_ranges) const
+  std::pair<std::string, onmt::Ranges>
+  detokenize_with_ranges(const std::vector<std::string>& words, bool merge_ranges) const
   {
     onmt::Ranges ranges;
-    std::string text = _tokenizer->detokenize(to_std_vector<std::string>(words),
-                                              ranges, merge_ranges);
-    py::list ranges_py;
-    for (const auto& pair : ranges)
-    {
-      auto range = py::make_tuple(pair.second.first, pair.second.second);
-      ranges_py.append(py::make_tuple(pair.first, range));
-    }
-
-    return py::make_tuple(STR_TYPE(text), py::dict(ranges_py));
+    std::string text = _tokenizer->detokenize(words, ranges, merge_ranges);
+    return std::make_pair(text, ranges);
   }
 
-  STR_TYPE detokenize(const py::list& words, const py::object& features) const
+  std::string detokenize(const std::vector<std::string>& words) const
   {
-    std::vector<std::string> words_vec = to_std_vector<std::string>(words);
-    std::vector<std::vector<std::string> > features_vec;
-
-    if (!features.is(py::none()))
-    {
-      for (const auto& list : features)
-        features_vec.emplace_back(to_std_vector<std::string>(list.cast<py::list>()));
-    }
-
-    return _tokenizer->detokenize(words_vec, features_vec);
+    return _tokenizer->detokenize(words);
   }
 
   const std::shared_ptr<const onmt::Tokenizer> get() const
@@ -337,25 +261,22 @@ private:
   std::string _tmp_dir;
 };
 
-PYBIND11_MODULE(pyonmttok, m)
+PYBIND11_MODULE(opennmt_tokenizer, m)
 {
   py::class_<TokenizerWrapper>(m, "Tokenizer")
-    .def(py::init<std::string, std::string, std::string, int, std::string, int, std::string, int, float, std::string, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, py::list>(),
+    .def(py::init<std::string, std::string, std::string, int, float, std::string, int, std::string, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, std::vector<std::string>>(),
          py::arg("mode"),
          py::arg("bpe_model_path")="",
-         py::arg("bpe_vocab_path")="",  // Keep for backward compatibility.
-         py::arg("bpe_vocab_threshold")=50,  // Keep for backward compatibility.
-         py::arg("vocabulary_path")="",
-         py::arg("vocabulary_threshold")=0,
          py::arg("sp_model_path")="",
          py::arg("sp_nbest_size")=0,
          py::arg("sp_alpha")=0.1,
+         py::arg("vocabulary_path")="",
+         py::arg("vocabulary_threshold")=0,
          py::arg("joiner")=onmt::Tokenizer::joiner_marker,
          py::arg("joiner_annotate")=false,
          py::arg("joiner_new")=false,
          py::arg("spacer_annotate")=false,
          py::arg("spacer_new")=false,
-         py::arg("case_feature")=false,
          py::arg("case_markup")=false,
          py::arg("no_substitution")=false,
          py::arg("preserve_placeholders")=false,
@@ -365,8 +286,7 @@ PYBIND11_MODULE(pyonmttok, m)
          py::arg("segment_alphabet_change")=false,
          py::arg("segment_alphabet")=py::list())
     .def("tokenize", &TokenizerWrapper::tokenize, py::arg("text"))
-    .def("detokenize", &TokenizerWrapper::detokenize,
-         py::arg("tokens"), py::arg("features")=py::none())
+    .def("detokenize", &TokenizerWrapper::detokenize, py::arg("tokens"))
     .def("detokenize_with_ranges", &TokenizerWrapper::detokenize_with_ranges,
          py::arg("tokens"), py::arg("merge_ranges")=false)
     .def("__copy__", copy<TokenizerWrapper>)

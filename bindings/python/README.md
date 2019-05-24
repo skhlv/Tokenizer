@@ -1,30 +1,27 @@
 # Python bindings
 
 ```bash
-pip install pyonmttok
+pip install opennmt-tokenizer
 ```
 
 ## Tokenization
 
 ```python
-import pyonmttok
+from opennmt_tokenizer import Tokenizer
 
-tokenizer = pyonmttok.Tokenizer(
+tokenizer = Tokenizer(
     mode: str,
     bpe_model_path="",
-    bpe_vocab_path="",  # Deprecated, use "vocabulary_path" instead.
-    bpe_vocab_threshold=50,  # Deprecated, use "vocabulary_threshold" instead.
-    vocabulary_path="",
-    vocabulary_threshold=0,
     sp_model_path="",
     sp_nbest_size=0,
     sp_alpha=0.1,
+    vocabulary_path="",
+    vocabulary_threshold=0,
     joiner="￭",
     joiner_annotate=False,
     joiner_new=False,
     spacer_annotate=False,
     spacer_new=False,
-    case_feature=False,
     case_markup=False,
     no_substitution=False,
     preserve_placeholders=False,
@@ -34,10 +31,8 @@ tokenizer = pyonmttok.Tokenizer(
     segment_alphabet_change=False,
     segment_alphabet=[])
 
-tokens, features = tokenizer.tokenize(text: str)
-
-text = tokenizer.detokenize(tokens, features)
-text = tokenizer.detokenize(tokens)  # will fail if case_feature is set.
+tokens = tokenizer.tokenize(text: str)
+text = tokenizer.detokenize(tokens)
 
 # Function that also returns a dictionary mapping a token index to a range in
 # the detokenized text. Set merge_ranges=True to merge consecutive ranges, e.g.
@@ -54,16 +49,16 @@ The Python wrapper supports BPE and SentencePiece subword learning through a com
 **1\. (optional) Create the `Tokenizer` that you ultimately want to apply, e.g.:**
 
 ```python
-tokenizer = pyonmttok.Tokenizer(
+tokenizer = Tokenizer(
     "aggressive", joiner_annotate=True, segment_numbers=True)
 ```
 
 **2\. Create the subword learner, e.g.:**
 
 ```python
-learner = pyonmttok.BPELearner(tokenizer=tokenizer, symbols=32000)
+learner = BPELearner(tokenizer=tokenizer, symbols=32000)
 # or:
-learner = pyonmttok.SentencePieceLearner(vocab_size=32000, character_coverage=0.98)
+learner = SentencePieceLearner(vocab_size=32000, character_coverage=0.98)
 ```
 
 **3\. Feed some raw data:**
@@ -84,9 +79,11 @@ The returned `tokenizer` instance can be used to apply subword tokenization on n
 ### Interface
 
 ```python
+from opennmt_tokenizer import BPELearner, SentencePieceLearner
+
 # See https://github.com/rsennrich/subword-nmt/blob/master/subword_nmt/learn_bpe.py
 # for argument documentation.
-learner = pyonmttok.BPELearner(
+learner = BPELearner(
     tokenizer=None,  # Defaults to tokenization mode "space".
     symbols=10000,
     min_frequency=2,
@@ -95,7 +92,7 @@ learner = pyonmttok.BPELearner(
 
 # See https://github.com/google/sentencepiece/blob/master/src/spm_train_main.cc
 # for available training options.
-learner = pyonmttok.SentencePieceLearner(
+learner = SentencePieceLearner(
     tokenizer=None,  # Defaults to tokenization mode "none".
     **training_options)
 
