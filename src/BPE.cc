@@ -3,35 +3,60 @@
 #include <algorithm>
 #include <fstream>
 #include <limits>
+#include <random>
 
+#include "onmt/Tokenizer.h"
 #include "onmt/unicode/Unicode.h"
-#include "onmt/CaseModifier.h"
+#include "Casing.h"
+#include "Utils.h"
 
 namespace onmt
 {
 
-  BPE::BPE(const std::string& model_path)
-    : _end_of_word("</w>")
-    , _begin_of_word("<w>")
-    , _prefix(false)
-    , _suffix(true)
-    , _case_insensitive(false)
-    , _version(0, 0)
-    , _joiner("")
+  static std::mt19937& get_random_generator()
   {
-    load_model(model_path);
+    static thread_local std::mt19937 generator(get_random_generator_seed());
+    return generator;
   }
 
-  BPE::BPE(const std::string& model_path, const std::string& joiner)
+  static inline float check_dropout(const float dropout)
+  {
+    if (dropout < 0 || dropout > 1)
+      throw std::invalid_argument("bpe_dropout should be between 0 and 1");
+    return dropout;
+  }
+
+
+  BPE::BPE(const std::string& model_path, const float dropout)
     : _end_of_word("</w>")
     , _begin_of_word("<w>")
     , _prefix(false)
     , _suffix(true)
     , _case_insensitive(false)
     , _version(0, 0)
-    , _joiner(joiner)
+    , _dropout(check_dropout(dropout))
   {
     load_model(model_path);
+
+    // For backward compatibility, assume the tokenization uses joiner annotation.
+    _tokenization_options.joiner_annotate = true;
+    _tokenization_options.joiner = Tokenizer::joiner_marker;
+  }
+
+  BPE::BPE(const std::string& model_path, const std::string& joiner, const float dropout)
+    : _end_of_word("</w>")
+    , _begin_of_word("<w>")
+    , _prefix(false)
+    , _suffix(true)
+    , _case_insensitive(false)
+    , _version(0, 0)
+    , _dropout(check_dropout(dropout))
+  {
+    load_model(model_path);
+
+    // For backward compatibility, assume the tokenization uses joiner annotation.
+    _tokenization_options.joiner_annotate = true;
+    _tokenization_options.joiner = joiner;
   }
 
   void BPE::load_model(const std::string& model_path)
@@ -47,34 +72,37 @@ namespace onmt
 
     std::getline(in, line);
 
-    if (line.compare(0, 9, "#version:") == 0)  // Model from learn_bpe.py
+    if (starts_with(line, "#version:"))  // Model from learn_bpe.py
     {
       int major_version = line[line.size() - 3] - '0';
       int minor_version = line[line.size() - 1] - '0';
       _version = std::make_pair(major_version, minor_version);
+      if (_version != std::make_pair(0, 1)
+          && _version != std::make_pair(0, 2))
+        throw std::runtime_error("unsupported BPE version");
     }
     else  // Model possibly from learn_bpe.lua
     {
       std::vector<std::string> options;
-      std::string option;
+      options.reserve(6);
 
       size_t sep = line.find(';');
       size_t bidx = 0;
       while (sep != std::string::npos && sep + 1 < line.size())
       {
-        options.push_back(line.substr(bidx, sep - bidx));
+        options.emplace_back(line.substr(bidx, sep - bidx));
         bidx = sep + 1;
         sep = line.find(';', bidx);
       }
-      options.push_back(line.substr(bidx));
+      options.emplace_back(line.substr(bidx));
 
       if (options.size() == 6 && options[0] == "v3")
       {
         _prefix = options[1] == "true";
         _suffix = options[2] == "true";
         _case_insensitive = options[3] == "true";
-        _begin_of_word = options[4];
-        _end_of_word = options[5];
+        _begin_of_word = std::move(options[4]);
+        _end_of_word = std::move(options[5]);
       }
       else  // Model from learn_bpe.py v0.1
         in.seekg(0);
@@ -84,7 +112,7 @@ namespace onmt
     while (std::getline(in, line))
     {
       /* line starting with '#' at the beginning of the file is a header */
-      if (header && line.length() && line[0] == '#')
+      if (header && !line.empty() && line[0] == '#')
         continue;
       header = false;
       size_t sep = line.find(' ');
@@ -96,19 +124,42 @@ namespace onmt
         if (_codes.count(pair) == 0)
           _codes.emplace(pair, i++);
 
-        _codes_reverse.emplace(pair, std::pair<std::string, std::string>(first_token, second_token));
+        _codes_reverse.emplace(std::move(pair),
+                               std::make_pair(std::move(first_token), std::move(second_token)));
       }
     }
   }
 
-  std::vector<std::string> BPE::encode(const std::string& str) const
+  std::vector<std::string> BPE::get_initial_pieces(const std::vector<unicode::CharInfo>& chars,
+                                                   const bool lowercase)
   {
-    std::vector<std::string> chars;
+    // Merge combining marks and possibly lowercase characters.
 
-    if (_case_insensitive)
-      unicode::explode_utf8_with_marks(CaseModifier::extract_case(str).first, chars);
-    else
-      unicode::explode_utf8_with_marks(str, chars);
+    std::vector<std::string> pieces;
+    pieces.reserve(chars.size());
+
+    for (const auto& c : chars)
+    {
+      if (c.char_type == unicode::CharType::Mark)
+      {
+        if (pieces.empty())
+          pieces.emplace_back(c.data, c.length);
+        else
+          pieces.back().append(c.data, c.length);
+      }
+      else if (lowercase && c.case_type == unicode::CaseType::Upper)
+        pieces.emplace_back(unicode::cp_to_utf8(unicode::get_lower(c.value)));
+      else
+        pieces.emplace_back(c.data, c.length);
+    }
+
+    return pieces;
+  }
+
+  std::vector<std::string> BPE::encode(const std::string& str, bool training) const
+  {
+    const auto chars_info = unicode::get_characters_info(str);
+    std::vector<std::string> chars = get_initial_pieces(chars_info, _case_insensitive);
 
     if (chars.size() == 1)
     {
@@ -122,8 +173,6 @@ namespace onmt
         chars.push_back(_end_of_word);
       else if (_version.first == 0 && _version.second == 2)
         chars.back() += _end_of_word;
-      else
-        throw std::runtime_error("unsupported BPE version");
     }
     else
     {
@@ -133,57 +182,86 @@ namespace onmt
         chars.push_back(_end_of_word);
     }
 
-    apply_merges(chars);
+    apply_merges(chars, training);
 
-    if (_prefix)
+    if (_prefix && starts_with(chars.front(), _begin_of_word))
     {
-      if (chars.front() == _begin_of_word)
+      if (chars.front().size() == _begin_of_word.size())
         chars.erase(chars.begin());
-      else if (chars.front().compare(0, _begin_of_word.size(), _begin_of_word) == 0)
+      else
         chars.front().erase(0, _begin_of_word.size());
     }
 
-    if (chars.back() == _end_of_word)
-      chars.pop_back();
-    else if (chars.back().size() > _end_of_word.size()
-             && chars.back().compare(chars.back().size() - _end_of_word.size(),
-                                     std::string::npos,
-                                     _end_of_word) == 0)
-      chars.back().erase(chars.back().size() - _end_of_word.size(), _end_of_word.size());
+    if (_suffix && ends_with(chars.back(), _end_of_word))
+    {
+      if (chars.back().size() == _end_of_word.size())
+        chars.pop_back();
+      else
+        chars.back().erase(chars.back().size() - _end_of_word.size());
+    }
 
     if (_case_insensitive)
     {
-      std::vector<std::string> word_tc;
+      // Return true case pieces.
+      std::vector<std::string> words_tc;
+      words_tc.reserve(chars.size());
 
-      std::vector<std::string> chars_tc;
-      std::vector<unicode::code_point_t> code_points_tc;
-
-      unicode::explode_utf8(str, chars_tc, code_points_tc);
-
-      std::vector<std::string>::iterator it = chars_tc.begin();
-      for (size_t i = 0; i < chars.size(); ++i)
+      for (size_t word_index = 0, char_index = 0; word_index < chars.size(); ++word_index)
       {
-        size_t curr_length = unicode::utf8len(chars[i]);
-        std::string curr_str;
-        std::vector<std::string>::iterator it_end = it + curr_length;
-        while (it != it_end)
+        // We accumulate true case characters from the original input (str) until the length
+        // of their lower case version (length_lc) matches the length of lowercase word that
+        // was merged by BPE (word_lc).
+        const std::string& word_lc = chars[word_index];
+        std::string word_tc;
+        for (size_t length_lc = 0;
+             char_index < chars_info.size() && length_lc < word_lc.size();
+             ++char_index)
         {
-          curr_str += *it;
-          it++;
+          const auto& char_tc = chars_info[char_index];
+          if (char_tc.case_type == unicode::CaseType::Upper)
+            length_lc += unicode::cp_to_utf8(unicode::get_lower(char_tc.value)).size();
+          else
+            length_lc += char_tc.length;
+          word_tc.append(char_tc.data, char_tc.length);
         }
-        word_tc.push_back(curr_str);
+        words_tc.emplace_back(std::move(word_tc));
       }
-      chars.swap(word_tc);
-    }
 
-    if (!_bpe_vocab.empty())
-    {
-      std::vector<std::string> out;
-      check_vocab_and_split(chars, out);
-      chars.swap(out);
+      chars = std::move(words_tc);
     }
 
     return chars;
+  }
+
+  std::vector<Token> BPE::encode_and_annotate(const Token& token, bool training) const
+  {
+    std::vector<std::string> encoded = encode(token.surface, training);
+    std::vector<Token> tokens;
+    tokens.reserve(encoded.size());
+
+    for (size_t j = 0; j < encoded.size(); ++j)
+    {
+      Token subword(std::move(encoded[j]));
+      if (j == 0)
+      {
+        subword.join_left = token.join_left;
+        subword.preserve = token.join_left && token.preserve;
+      }
+      if (j + 1 < encoded.size())
+        subword.join_right = true;
+      else
+      {
+        subword.join_right = token.join_right;
+        subword.preserve = subword.preserve || (token.join_right && token.preserve);
+      }
+      tokens.emplace_back(std::move(subword));
+    }
+
+    if (!_bpe_vocab.empty())
+      tokens = check_vocab_and_split(std::move(tokens));
+
+    propagate_token_properties(token, tokens);
+    return tokens;
   }
 
   int BPE::get_score(const std::string& gram1, const std::string& gram2) const
@@ -195,7 +273,7 @@ namespace onmt
       return std::numeric_limits<int>::max();
   }
 
-  void BPE::apply_merges(std::vector<std::string>& chars) const
+  void BPE::apply_merges(std::vector<std::string>& chars, bool training) const
   {
     // Compute score for all pairs.
     std::vector<int> scores;
@@ -206,11 +284,29 @@ namespace onmt
     while (true)
     {
       // Get best score.
-      auto min_it = std::min_element(scores.begin(), scores.end());
-      if (*min_it == std::numeric_limits<int>::max())
-        break;
+      int best_score = std::numeric_limits<int>::max();
+      size_t index = 0;
 
-      size_t index = std::distance(scores.begin(), min_it);
+      for (size_t i = 0; i < scores.size(); ++i)
+      {
+        if (training && _dropout != 0)
+        {
+          std::uniform_real_distribution<float> dist;
+          const float sample = dist(get_random_generator());
+          if (sample < _dropout)
+            continue;
+        }
+
+        const int score = scores[i];
+        if (score < best_score)
+        {
+          best_score = score;
+          index = i;
+        }
+      }
+
+      if (best_score == std::numeric_limits<int>::max())
+        break;
 
       // Merge pair.
       chars[index] += chars[index + 1];
@@ -227,17 +323,13 @@ namespace onmt
     }
   }
 
-  void BPE::init_bpe_vocab(const std::string& vocab_path, int bpe_vocab_threshold)
+  void BPE::set_vocabulary(const std::vector<std::string>& vocabulary,
+                           const Tokenizer::Options* options)
   {
-    if (!_bpe_vocab.empty())
-      return;
-
-    load_vocabulary(vocab_path, bpe_vocab_threshold);
-  }
-
-  void BPE::set_vocabulary(const std::vector<std::string>& vocabulary)
-  {
+    _bpe_vocab.clear();
     _bpe_vocab.insert(vocabulary.begin(), vocabulary.end());
+    if (options)
+      _tokenization_options = *options;
   }
 
   void BPE::reset_vocabulary()
@@ -245,76 +337,107 @@ namespace onmt
     _bpe_vocab.clear();
   }
 
-  void BPE::check_vocab_and_split(const std::vector<std::string> & orig, std::vector<std::string> & out) const
+  bool BPE::in_vocabulary(const std::string& token) const
+  {
+    return _bpe_vocab.find(token) != _bpe_vocab.end();
+  }
+
+  bool BPE::in_vocabulary(const onmt::Token& token, const bool first, const bool last) const
+  {
+    std::string surface = token.surface;
+
+    if (_tokenization_options.joiner_annotate && !_tokenization_options.joiner_new)
+    {
+      if (token.join_left && (!first || !token.preserve))
+        surface = _tokenization_options.joiner + surface;
+      if (token.join_right && (!last || !token.preserve))
+        surface = surface + _tokenization_options.joiner;
+    }
+    else if (_tokenization_options.spacer_annotate && !_tokenization_options.spacer_new)
+    {
+      if (!token.join_left && (!first || !token.preserve))
+        surface = Tokenizer::spacer_marker + surface;
+    }
+
+    return in_vocabulary(surface);
+  }
+
+  std::vector<Token> BPE::check_vocab_and_split(std::vector<Token> pieces) const
   {
     // Check for each segment in word if it is in-vocabulary,
     // and segment OOV segments into smaller units by reversing the BPE merge operations
+    std::vector<Token> pieces_in_vocab;
+    pieces_in_vocab.reserve(pieces.size());
 
-    for (auto it = orig.begin(); it != orig.end(); ++it)
+    for (size_t i = 0; i < pieces.size(); ++i)
     {
-      const std::string& segment = *it;
+      const bool first = (i == 0);
+      const bool last = (i + 1 == pieces.size());
 
-      // if it is not the last, add joiner
-      if (_bpe_vocab.count(std::next(it) == orig.end() ? segment : segment+_joiner) > 0)
-      {
-        out.push_back(segment);
-      }
+      Token& piece = pieces[i];
+
+      if (in_vocabulary(piece, first, last))
+        pieces_in_vocab.emplace_back(std::move(piece));
       else
-      {
-        recursive_split(segment, out, std::next(it) == orig.end());
-      }
+        recursive_split(std::move(piece), pieces_in_vocab, first, last);
     }
 
+    return pieces_in_vocab;
   }
 
-  void BPE::recursive_split(const std::string & segment, std::vector<std::string> & out, bool finalflag) const
+  void BPE::recursive_split(Token piece,
+                            std::vector<Token>& pieces_in_vocab,
+                            const bool first,
+                            const bool last) const
   {
     // Recursively split segment into smaller units (by reversing BPE merges)
-    // until all units are either in - vocabulary, or cannot be split futher.
-
-    auto got = _codes_reverse.find(finalflag == true ? segment+_end_of_word: segment);
-    if (got != _codes_reverse.end())
+    // until all units are either in - vocabulary, or cannot be split further.
+    std::string bpe_surface = piece.surface;
+    size_t left_offset = 0;
+    size_t right_offset = 0;
+    if (_prefix && first)
     {
-      std::string left = got->second.first;
-      std::string right = got->second.second;
-
-      if (finalflag)
-        right = right.substr(0, right.size() - 4);
-
-      recursive_split_left(left, out);
-      recursive_split_right(right, out, finalflag);
+      bpe_surface = _begin_of_word + bpe_surface;
+      left_offset = _begin_of_word.size();
     }
-    else
+    if (_suffix && last)
     {
-      out.push_back(segment);
+      bpe_surface = bpe_surface + _end_of_word;
+      right_offset = _end_of_word.size();
     }
 
-  }
-
-  void BPE::recursive_split_left(const std::string & segment, std::vector<std::string> & out) const
-  {
-    if (_bpe_vocab.count(segment + _joiner) > 0)
+    auto it = _codes_reverse.find(bpe_surface);
+    if (it == _codes_reverse.end())
     {
-      out.push_back(segment);
-    }
-    else
-    {
-      recursive_split(segment, out, false);
+      pieces_in_vocab.emplace_back(std::move(piece));
+      return;
     }
 
-  }
+    const auto& pair = it->second;
 
-  void BPE::recursive_split_right(const std::string & segment, std::vector<std::string> & out, bool finalflag) const
-  {
-    if((finalflag && _bpe_vocab.count(segment) > 0) || (!finalflag && _bpe_vocab.count(segment + _joiner) > 0))
     {
-      out.push_back(segment);
-    }
-    else
-    {
-      recursive_split(segment, out, finalflag);
+      Token left_piece(pair.first.substr(left_offset));
+      left_piece.join_left = first && piece.join_left;
+      left_piece.join_right = true;
+      left_piece.preserve = first && piece.join_left && piece.preserve;
+
+      if (in_vocabulary(left_piece, first, false))
+        pieces_in_vocab.emplace_back(std::move(left_piece));
+      else
+        recursive_split(std::move(left_piece), pieces_in_vocab, first, false);
     }
 
+    {
+      Token right_piece(pair.second.substr(0, pair.second.size() - right_offset));
+      right_piece.join_left = false;
+      right_piece.join_right = !last || piece.join_right;
+      right_piece.preserve = last && piece.join_right && piece.preserve;
+
+      if (in_vocabulary(right_piece, false, last))
+        pieces_in_vocab.emplace_back(std::move(right_piece));
+      else
+        recursive_split(std::move(right_piece), pieces_in_vocab, false, last);
+    }
   }
 
 }

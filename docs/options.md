@@ -8,11 +8,19 @@ This file documents the options of the Tokenizer interface which can be used in:
 
 *The exact name format of each option may be different depending on the API used.*
 
-## Terminology
+**Terminology:**
 
-* **joiner**: special character indicating that the surrounding tokens should be merged when detokenized
-* **spacer**: special character indicating that a space should be introduced when detokenized
-* **placeholder** (or **protected sequence**): sequence of characters delimited by ｟ and ｠ that should not be segmented
+* *joiner*: special character indicating that the surrounding tokens should be merged when detokenized
+* *spacer*: special character indicating that a space should be introduced when detokenized
+* *placeholder* (or *protected sequence*): sequence of characters delimited by ｟ and ｠ that should not be segmented
+
+**Table of contents:**
+
+1. [General](#general)
+1. [Case annotation](#case-annotation)
+1. [Subword encoding](#subword-encoding)
+1. [Reversible tokenization](#reversible-tokenization)
+1. [Segmentation](#segmentation)
 
 ## General
 
@@ -45,7 +53,7 @@ It costs £2,000.
 
 **Notes:**
 
-* `space` and `none` modes are incompatible with options listed in the *Segmenting* section.
+* `space` and `none` modes are incompatible with options listed in the [Segmentation](#segmentation) section.
 * In all modes, the text is at least segmented on placeholders:
 
 ```bash
@@ -59,6 +67,23 @@ a ｟b｠ c
 ### `no_substitution` (boolean, default: `false`)
 
 Disable substitution of special characters defined by the Tokenizer and found in the input text (e.g. joiners, spacers, etc.).
+
+### `with_separators` (boolean, default: `false`)
+
+By default, characters from the "Separator" Unicode category are used as tokens boundaries and are not included in the tokenized output. They can be returned by enabling this option.
+
+When writing the tokenization results to a file, you can change the default tokens delimiter to better isolate these characters:
+
+```bash
+$ echo "A B" | cli/tokenize
+A B
+$ echo "A B" | cli/tokenize --with_separators
+A   B
+$ echo "A B" | cli/tokenize --with_separators --tokens_delimiter "++"
+A++ ++B
+```
+
+Note: this option makes the tokenized output reversible so `joiner_annotate` or `spacer_annotate` should not be used.
 
 ## Case annotation
 
@@ -88,7 +113,7 @@ Hello world !
 
 ### `case_markup` (boolean, default: `false`)
 
-Lowercase text input and inject case markups as additional tokens. This option also enables `segment_case`.
+Lowercase text input and inject case markups as additional tokens. This option also enables `segment_case` and is not compatible with the "none" and "space" tokenization modes.
 
 ```bash
 $ echo "Hello world!" | cli/tokenize --case_markup
@@ -113,7 +138,7 @@ Hello world !
 
 ### `soft_case_regions` (boolean, default: `false`)
 
-With `case_markup`, allow uppercase regions to span over case invariant tokens to optimize the overall number of case regions.
+With `case_markup`, allow uppercase regions to span over case invariant tokens to minimize the number of uppercase regions.
 
 ```bash
 $ echo "U.N" | cli/tokenize --case_markup
@@ -129,11 +154,44 @@ $ echo "A-BC/D" | cli/tokenize --case_markup --soft_case_regions
 ｟mrk_begin_case_region_U｠ a- bc / d ｟mrk_end_case_region_U｠
 ```
 
+### `lang` (string, default: `""`)
+
+[ISO language code](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes) of the text passed to the tokenizer. When set, the tokenizer may enable language-specific rules to improve the tokenization or detokenization correctness. For example, we use the [ICU library](http://site.icu-project.org/) to enable [language-specific case mappings](https://unicode-org.github.io/icu/userguide/transforms/casemappings.html#full-language-specific-case-mapping) such as the following:
+
+* In Dutch, the "ij" digraph becomes "IJ" even with capitalization:
+
+```bash
+$ echo "｟mrk_case_modifier_C｠ ijssel" | cli/detokenize --lang nl
+IJssel
+```
+
+* In Greek, most vowels loose their accent when the whole word is in uppercase:
+
+```bash
+$ echo "｟mrk_begin_case_region_U｠ γύρισε σπίτι ｟mrk_end_case_region_U｠" | cli/detokenize --lang el
+ΓΥΡΙΣΕ ΣΠΙΤΙ
+```
+
+* In Greek, the lowercase version of sigma "Σ" depends on the context:
+
+```bash
+$ echo "ΣΙΓΜΑ ΤΕΛΙΚΟΣ" | cli/tokenize --lang el --case_markup --soft_case_regions
+｟mrk_begin_case_region_U｠ σιγμα τελικος ｟mrk_end_case_region_U｠
+```
+
+Note: when compiling from source, this option requires ICU version 60 or greater.
+
 ## Subword encoding
 
 ### `bpe_model_path` (string, default: `""`)
 
 Path to the BPE model.
+
+### `bpe_dropout` (float, default: `0`)
+
+Dropout BPE merge operations with this probability, as described in [Provilkov et al. 2019](https://www.aclweb.org/anthology/2020.acl-main.170/).
+
+Note: BPE dropout should be used on training data only. To disable BPE dropout during inference, you can set `training=False` when calling the tokenization methods.
 
 ### `sp_model_path` (string, default: `""`)
 
@@ -151,7 +209,9 @@ H ￭ello world ￭!
 
 ### `sp_nbest_size` (int, default: `0`)
 
-Number of candidates for the SentencePiece sampling API. When the value is 0, the standard SentencePiece encoding is used.
+Number of candidates for the SentencePiece sampling API, as described in [Kudo 2018](https://www.aclweb.org/anthology/P18-1007/). When the value is 0, the standard SentencePiece encoding is used.
+
+Note: Subword sampling should be used on training data only. To disable subword sampling during inference, you can set `training=False` when calling the tokenization methods.
 
 ```bash
 $ echo "Hello world!" | cli/tokenize --mode none --sp_model_path wmtende.model --sp_nbest_size 64
@@ -163,15 +223,25 @@ $ echo "Hello world!" | cli/tokenize --mode none --sp_model_path wmtende.model -
 
 ### `sp_alpha` (float, default: `0.1`)
 
-Smoothing parameter for the SentencePiece sampling API.
+Smoothing parameter for the SentencePiece sampling API, as described in [Kudo 2018](https://www.aclweb.org/anthology/P18-1007/).
 
 ### `vocabulary_path` (string, default: `""`)
 
-Path to the vocabulary file. If set, subword encoders will only generate tokens that exist in the vocabulary. Format is: `<token> <space> <frequency>`. A missing frequency is equivalent to 1.
+Path to the vocabulary file.
+
+If set, subword encoders will recursively split OOV tokens into smaller units until all units are either in the vocabulary, or can not be split further.
+
+The following line formats are accepted:
+
+* `<token><space><frequency>`
+* `<token><tab><frequency>`
+* `<token>` (the token frequency is set to 1)
+
+where `<frequency>` is a positive integer.
 
 ### `vocabulary_threshold` (int, default: `0`)
 
-When using `vocabulary`, any words with a frequency lower than `vocabulary_threshold` will be treated as OOV.
+When using `vocabulary_path`, any words with a frequency lower than `vocabulary_threshold` will be treated as OOV.
 
 ## Reversible tokenization
 
@@ -179,7 +249,7 @@ These options inject special characters to make the tokenization reversible.
 
 ### `joiner_annotate` (boolean, default: `false`)
 
-Mark joints with joiner characters (mutually exclusive with `spacer_annotate`). When possible, joiners are attached to the least important token.
+Mark joints with joiner characters (mutually exclusive with `spacer_annotate`).
 
 ```bash
 $ echo "Hello World!" | cli/tokenize --joiner_annotate
@@ -229,7 +299,7 @@ H e l l o ▁ W o r l d !
 
 ### `preserve_placeholders` (boolean, default: `false`)
 
-Do not attach joiners or spacers to placeholders.
+Do not attach joiners or spacers to placeholders. This should generally be enabled to not duplicate placeholders in the NMT vocabulary.
 
 ```bash
 $ echo "Hello｟World｠" | cli/tokenize --joiner_annotate
@@ -246,6 +316,12 @@ Do not attach joiners or spacers to tokens that were segmented by:
 * a `segment_*` option (see next section)
 
 ```bash
+$ echo "WiFi" | cli/tokenize --segment_case --joiner_annotate
+Wi￭ Fi
+
+$ echo "WiFi" | cli/tokenize --segment_case --joiner_annotate --preserve_segmented_tokens
+Wi ￭ Fi
+
 $ echo "測試abc" | cli/tokenize --segment_alphabet Han --segment_alphabet_change \
     --joiner_annotate
 測￭ 試￭ abc
@@ -267,7 +343,7 @@ a ￭ ｟b｠
 
 ### `support_prior_joiners`(boolean, default: `false`)
 
-If the input already has joiners, support these joiners as pre-tokenization marks.
+If the input already has joiners, use these joiners as pre-tokenization marks.
 
 ```bash
 $ echo "pre￭ tokenization." | cli/tokenize --joiner_annotate --support_prior_joiners \
@@ -275,7 +351,9 @@ $ echo "pre￭ tokenization." | cli/tokenize --joiner_annotate --support_prior_j
 pre￭ tokenization ￭.
 ```
 
-## Segmenting
+## Segmentation
+
+These options enable additional segmentation rules. They are ignored when the tokenization mode is "none" or "space".
 
 ### `segment_case` (boolean, default: `false`)
 
@@ -297,7 +375,7 @@ $ echo "1234" | cli/tokenize --mode aggressive --segment_numbers
 
 ### `segment_alphabet` (list of strings, default: `[]`)
 
-List of alphabets for which to split all letters. A complete list of supported alphabets is available in the source file [`Alphabet.h`](../include/onmt/Alphabet.h).
+List of alphabets for which to split all letters (can be any [Unicode script alias](https://en.wikipedia.org/wiki/Script_(Unicode))).
 
 ```bash
 $ echo "測試 abc" | cli/tokenize --segment_alphabet Han

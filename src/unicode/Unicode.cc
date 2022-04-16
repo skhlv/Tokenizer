@@ -1,13 +1,13 @@
 #include "onmt/unicode/Unicode.h"
 
 #include <algorithm>
+#include <cstring>
 
-#ifdef WITH_ICU
-#  include <unicode/uchar.h>
-#  include <unicode/unistr.h>
-#else
-#  include "onmt/unicode/Data.h"
-#endif
+#include <unicode/locid.h>
+#include <unicode/uchar.h>
+#include <unicode/uscript.h>
+
+#include "../Utils.h"
 
 
 namespace onmt
@@ -17,379 +17,292 @@ namespace onmt
 
     std::string cp_to_utf8(code_point_t uc)
     {
-#ifdef WITH_ICU
-      icu::UnicodeString uni_str(uc);
-      std::string str;
-      uni_str.toUTF8String(str);
-      return str;
-#else
-      unsigned char u1, u2, u3, u4;
-      char ret[5];
-
-      if (uc < 0x80)
-      {
-        ret[0] = uc; ret[1] = 0;
-        return ret;
-      }
-      else if (uc < 0x800)
-      {
-        u2 = 0xC0 | (uc >> 6);
-        u1 = 0x80 | (uc & 0x3F);
-        ret[0] = u2;
-        ret[1] = u1;
-        ret[2] = 0;
-        return ret;
-      }
-      else if (uc < 0x10000)
-      {
-        u3 = 0xE0 | (uc >> 12);
-        u2 = 0x80 | ((uc >> 6) & 0x3F);
-        u1 = 0x80 | (uc & 0x3F);
-        ret[0] = u3;
-        ret[1] = u2;
-        ret[2] = u1;
-        ret[3] = 0;
-        return ret;
-      }
-      else if (uc < 0x200000)
-      {
-        u4 = 0xF0 | (uc >> 18);
-        u3 = 0x80 | ((uc >> 12) & 0x3F);
-        u2 = 0x80 | ((uc >> 6) & 0x3F);
-        u1 = 0x80 | (uc & 0x3F);
-        ret[0] = u4;
-        ret[1] = u3;
-        ret[2] = u2;
-        ret[3] = u1;
-        ret[4] = 0;
-        return ret;
-      }
-
-      return "";
-#endif
+      uint8_t s[U8_MAX_LENGTH];
+      int32_t offset = 0;
+      UBool error = false;
+      U8_APPEND(s, offset, U8_MAX_LENGTH, uc, error);
+      if (error)
+        return std::string();
+      return std::string(reinterpret_cast<std::string::value_type*>(s), offset);
     }
 
     code_point_t utf8_to_cp(const unsigned char* s, unsigned int &l)
     {
-      if (*s == 0 || *s >= 0xfe)
-        return 0;
-      if (*s <= 0x7f)
+      UChar32 c = -1;
+      int32_t offset = 0;
+      U8_NEXT(s, offset, -1, c);
+      if (c < 0)
       {
-        l = 1;
-        return *s;
+        l = 0;
+        c = 0;
       }
-      if (!s[1])
-        return 0;
-      if (*s < 0xe0)
-      {
-        l = 2;
-        return ((s[0] & 0x1f) << 6) + ((s[1] & 0x3f));
-      }
-      if (!s[2])
-        return 0;
-      if (*s < 0xf0)
-      {
-        l = 3;
-        return ((s[0] & 0x0f) << 12) + ((s[1] & 0x3f) << 6) + ((s[2] & 0x3f));
-      }
-      if (!s[3])
-        return 0;
-      if (*s < 0xf8)
-      {
-        l = 4;
-        return (((s[0] & 0x07) << 18) + ((s[1] & 0x3f) << 12) + ((s[2] & 0x3f) << 6)
-                + ((s[3] & 0x3f)));
-      }
-
-      return 0; // Incorrect unicode
+      else
+        l = offset;
+      return c;
     }
 
     std::vector<std::string> split_utf8(const std::string& str, const std::string& sep)
     {
-      std::vector<std::string> chars;
-      std::vector<code_point_t> code_points;
+      return split_string(str, sep);
+    }
 
-      explode_utf8(str, chars, code_points);
-
-      std::vector<std::string> fragments;
-      std::string fragment;
-
-      for (size_t i = 0; i < chars.size(); ++i)
+    template <typename Callback>
+    static inline void character_iterator(const std::string& str, const Callback& callback)
+    {
+      const char* c_str = str.c_str();
+      while (*c_str)
       {
-        if (chars[i] == sep)
-        {
-          fragments.push_back(fragment);
-          fragment.clear();
-        }
-        else
-        {
-          fragment += chars[i];
-        }
+        unsigned int char_size = 0;
+        code_point_t code_point = utf8_to_cp(
+          reinterpret_cast<const unsigned char*>(c_str), char_size);
+        if (code_point == 0)  // Ignore invalid code points.
+          continue;
+        callback(c_str, char_size, code_point);
+        c_str += char_size;
       }
-
-      if (!fragment.empty() || chars.back() == sep)
-        fragments.push_back(fragment);
-
-      return fragments;
     }
 
     void explode_utf8(const std::string& str,
                       std::vector<std::string>& chars,
                       std::vector<code_point_t>& code_points)
     {
-      const char* c_str = str.c_str();
-
       chars.reserve(str.length());
       code_points.reserve(str.length());
 
-      while (*c_str)
-      {
-        unsigned int char_size = 0;
-        code_point_t code_point = utf8_to_cp(
-          reinterpret_cast<const unsigned char*>(c_str), char_size);
+      const auto callback = [&chars, &code_points](const char* data,
+                                                   unsigned int length,
+                                                   code_point_t code_point) {
         code_points.push_back(code_point);
-        chars.emplace_back(c_str, char_size);
-        c_str += char_size;
-      }
-    }
+        chars.emplace_back(data, length);
+      };
 
-    void explode_utf8_with_marks(const std::string& str,
-                                 std::vector<std::string>& chars,
-                                 std::vector<code_point_t>& code_points_main,
-                                 std::vector<std::vector<code_point_t>>& code_points_combining,
-                                 bool keep_code_points)
-    {
-      if (!keep_code_points)
-        explode_utf8_with_marks(str, chars);
-      else
-        explode_utf8_with_marks(str, chars, &code_points_main, &code_points_combining);
+      character_iterator(str, callback);
     }
 
     void explode_utf8_with_marks(const std::string& str,
                                  std::vector<std::string>& chars,
                                  std::vector<code_point_t>* code_points_main,
                                  std::vector<std::vector<code_point_t>>* code_points_combining,
-                                 const std::vector<std::string>* protected_chars)
+                                 const std::vector<code_point_t>* protected_chars)
     {
-      const char* c_str = str.c_str();
-
       chars.reserve(str.length());
       if (code_points_main)
         code_points_main->reserve(str.length());
       if (code_points_combining)
         code_points_combining->reserve(str.length());
 
-      while (*c_str)
-      {
-        unsigned int char_size = 0;
-        code_point_t code_point = utf8_to_cp(
-          reinterpret_cast<const unsigned char*>(c_str), char_size);
-        if (!chars.empty()
-            && is_mark(code_point)
-            && (!protected_chars
-                || std::find(protected_chars->begin(), protected_chars->end(), chars.back()) == protected_chars->end()))
-        {
-          if (code_points_combining)
-            code_points_combining->back().push_back(code_point);
-          chars.back().append(c_str, char_size);
-        }
-        else
+      const auto callback = [&](const char* data,
+                                unsigned int length,
+                                code_point_t code_point) {
+        if (chars.empty()
+            || !is_mark(code_point)
+            || (protected_chars
+                && std::find(protected_chars->begin(),
+                             protected_chars->end(),
+                             code_points_main->back()) != protected_chars->end()))
         {
           if (code_points_main)
             code_points_main->emplace_back(code_point);
           if (code_points_combining)
             code_points_combining->emplace_back();
-          chars.emplace_back(c_str, char_size);
+          chars.emplace_back(data, length);
         }
-        c_str += char_size;
-      }
+        else
+        {
+          if (code_points_combining)
+            code_points_combining->back().push_back(code_point);
+          chars.back().append(data, length);
+        }
+      };
+
+      character_iterator(str, callback);
     }
 
 
     size_t utf8len(const std::string& str)
     {
-#ifdef WITH_ICU
-      icu::UnicodeString uni_str(str.c_str(), str.length());
-      return uni_str.length();
-#else
-      std::vector<std::string> chars;
-      std::vector<unicode::code_point_t> code_points;
-      unicode::explode_utf8(str, chars, code_points);
-      return chars.size();
-#endif
+      size_t length = 0;
+      character_iterator(str, [&length](const char*, unsigned int, code_point_t) { ++length; });
+      return length;
     }
 
-#ifndef WITH_ICU
-    // convert unicode character to uppercase form if defined in unicodedata
-    // dynamically reverse maplower if necessary
-    static map_unicode map_upper;
-
-    static bool _find_codepoint(code_point_t u, const map_of_list_t &map)
+    static inline CaseType get_case_type(const int8_t category)
     {
-      for (const auto& pair: map)
+      switch (category)
       {
-        if (u >= pair.first)
-        {
-          unsigned int idx = ((u - pair.first) >> 4);
-          if (idx < pair.second.size())
-          {
-            unsigned int p = (u - pair.first) & 0xf;
-            return (((pair.second[idx] << p)) & 0x8000);
-          }
-        }
+      case U_LOWERCASE_LETTER:
+        return CaseType::Lower;
+      case U_UPPERCASE_LETTER:
+        return CaseType::Upper;
+      default:
+        return CaseType::None;
       }
-
-      return 0;
     }
-#endif
+
+    static inline CharType get_char_type(const int8_t category)
+    {
+      switch (category)
+      {
+      case U_SPACE_SEPARATOR:
+      case U_LINE_SEPARATOR:
+      case U_PARAGRAPH_SEPARATOR:
+        return CharType::Separator;
+
+      case U_DECIMAL_DIGIT_NUMBER:
+      case U_LETTER_NUMBER:
+      case U_OTHER_NUMBER:
+        return CharType::Number;
+
+      case U_UPPERCASE_LETTER:
+      case U_LOWERCASE_LETTER:
+      case U_TITLECASE_LETTER:
+      case U_MODIFIER_LETTER:
+      case U_OTHER_LETTER:
+        return CharType::Letter;
+
+      case U_NON_SPACING_MARK:
+      case U_ENCLOSING_MARK:
+      case U_COMBINING_SPACING_MARK:
+        return CharType::Mark;
+
+      default:
+        return CharType::Other;
+      }
+    }
+
+    CharType get_char_type(code_point_t u)
+    {
+      return get_char_type(u_charType(u));
+    }
 
     bool is_separator(code_point_t u)
     {
-#ifdef WITH_ICU
-      return U_GET_GC_MASK(u) & U_GC_Z_MASK;
-#else
-      if (!u)
-        return false;
-      return (u >= 9 && u <= 13) || _find_codepoint(u, unidata_Separator);
-#endif
-    }
-
-    bool is_letter(code_point_t u, _type_letter &tl)
-    {
-#ifdef WITH_ICU
-      bool is_alpha = u_isalpha(u);
-      if (is_alpha)
-      {
-        if (u_isupper(u))
-          tl = _letter_upper;
-        else if (u_islower(u))
-          tl = _letter_lower;
-        else
-          tl = _letter_other;
-      }
-      return is_alpha;
-#else
-      if (!u)
-        return false;
-      // unicode letter or CJK Unified Ideograph
-      if ((u>=0x4E00 && u<=0x9FD5) // CJK Unified Ideograph
-          || (u>=0x2F00 && u<=0x2FD5) // Kangxi Radicals
-          || (u>=0x2E80 && u<=0x2EFF) // CJK Radicals Supplement
-          || (u>=0x3040 && u<=0x319F) // Hiragana, Katakana, Bopomofo, Hangul Compatibility Jamo, Kanbun
-          || (u>=0x1100 && u<=0x11FF) // Hangul Jamo
-          || (u>=0xAC00 && u<=0xD7AF) // Hangul Syllables
-          || _find_codepoint(u, unidata_LetterOther))
-      {
-        tl = _letter_other;
-        return true;
-      }
-      if (_find_codepoint(u, unidata_LetterLower))
-      {
-        tl = _letter_lower;
-        return true;
-      }
-      if (_find_codepoint(u, unidata_LetterUpper))
-      {
-        tl = _letter_upper;
-        return true;
-      }
-
-      return false;
-#endif
+      return get_char_type(u) == CharType::Separator;
     }
 
     bool is_letter(code_point_t u)
     {
-#ifdef WITH_ICU
-      return U_GET_GC_MASK(u) & U_GC_L_MASK;
-#else
-      if (!u)
-        return false;
-      // unicode letter or CJK Unified Ideograph
-      return ((u>=0x4E00 && u<=0x9FD5) // CJK Unified Ideograph
-              || (u>=0x2F00 && u<=0x2FD5) // Kangxi Radicals
-              || (u>=0x2E80 && u<=0x2EFF) // CJK Radicals Supplement
-              || (u>=0x3040 && u<=0x319F) // Hiragana, Katakana, Bopomofo, Hangul Compatibility Jamo, Kanbun
-              || (u>=0x1100 && u<=0x11FF) // Hangul Jamo
-              || (u>=0xAC00 && u<=0xD7AF) // Hangul Syllables
-              || _find_codepoint(u, unidata_LetterOther)
-              || _find_codepoint(u, unidata_LetterLower)
-              || _find_codepoint(u, unidata_LetterUpper));
-#endif
+      return get_char_type(u) == CharType::Letter;
     }
 
     bool is_number(code_point_t u)
     {
-#ifdef WITH_ICU
-      return U_GET_GC_MASK(u) & U_GC_N_MASK;
-#else
-      if (!u)
-        return false;
-      return _find_codepoint(u, unidata_Number);
-#endif
+      return get_char_type(u) == CharType::Number;
     }
 
     bool is_mark(code_point_t u)
     {
-#ifdef WITH_ICU
-      return U_GET_GC_MASK(u) & U_GC_M_MASK;
-#else
-      if (!u)
-        return false;
-      return _find_codepoint(u, unidata_Mark);
-#endif
+      return get_char_type(u) == CharType::Mark;
     }
 
-    _type_letter get_case(code_point_t u)
+    CaseType get_case_v2(code_point_t u)
     {
-#ifdef WITH_ICU
-      if (u_islower(u))
-        return _letter_lower;
-      if (u_isupper(u))
-        return _letter_upper;
-      return _letter_other;
-#else
-      _type_letter type = _letter_other;
-      is_letter(u, type);
-      return type;
-#endif
+      return get_case_type(u_charType(u));
     }
 
-    // convert unicode character to lowercase form if defined in unicodedata
     code_point_t get_lower(code_point_t u)
     {
-#ifdef WITH_ICU
       return u_tolower(u);
-#else
-      map_unicode::const_iterator it = map_lower.find(u);
-      if (it == map_lower.end())
-        return u;
-      return it->second;
-#endif
     }
 
     code_point_t get_upper(code_point_t u)
     {
-#ifdef WITH_ICU
       return u_toupper(u);
-#else
-      if (map_upper.size() == 0)
-      {
-        map_unicode::const_iterator it;
-        for (it = map_lower.begin(); it != map_lower.end(); it++)
+    }
+
+    std::vector<CharInfo> get_characters_info(const std::string& str)
+    {
+      std::vector<CharInfo> chars;
+      chars.reserve(str.size());
+
+      character_iterator(
+        str,
+        [&chars](const char* data, unsigned int length, code_point_t code_point)
         {
-          map_unicode::const_iterator jt = map_upper.find(it->second);
-          // reversing, we find smallest codepoint
-          if (jt == map_upper.end() || jt->second>it->first)
-            map_upper[it->second] = it->first;
-        }
+          const auto category = u_charType(code_point);
+          const auto char_type = get_char_type(category);
+          const auto case_type = get_case_type(category);
+          chars.emplace_back(data, length, code_point, char_type, case_type);
+        });
+
+      return chars;
+    }
+
+    bool support_language_rules()
+    {
+      return U_ICU_VERSION_MAJOR_NUM >= 60;
+    }
+
+    bool is_valid_language(const char* language)
+    {
+      return icu::Locale(language).getISO3Language()[0] != '\0';
+    }
+
+    // The functions below are made backward compatible with the Kangxi and Kanbun script names
+    // that were previously declared in Alphabet.h but are not Unicode script aliases.
+    static const std::vector<std::pair<std::pair<const char*, int>,
+                                       std::pair<code_point_t, code_point_t>>>
+    compat_scripts = {
+      {{"Kangxi", USCRIPT_CODE_LIMIT + 0}, {0x2F00, 0x2FD5}},
+      {{"Kanbun", USCRIPT_CODE_LIMIT + 1}, {0x3190, 0x319F}},
+    };
+
+    int get_script_code(const char* script_name)
+    {
+      for (const auto& pair : compat_scripts)
+      {
+        const auto& script_info = pair.first;
+        if (strcmp(script_name, script_info.first) == 0)
+          return script_info.second;
       }
 
-      map_unicode::const_iterator it = map_upper.find(u);
-      if (it == map_upper.end())
-        return u;
-      return it->second;
-#endif
+      return u_getPropertyValueEnum(UCHAR_SCRIPT, script_name);
+    }
+
+    const char* get_script_name(int script_code)
+    {
+      for (const auto& pair : compat_scripts)
+      {
+        const auto& script_info = pair.first;
+        if (script_info.second == script_code)
+          return script_info.first;
+      }
+
+      return uscript_getName(static_cast<UScriptCode>(script_code));
+    }
+
+    int get_script(code_point_t c, int previous_script)
+    {
+      for (const auto& pair : compat_scripts)
+      {
+        const auto& range = pair.second;
+        if (c >= range.first && c <= range.second)
+          return pair.first.second;
+      }
+
+      UErrorCode error = U_ZERO_ERROR;
+      UScriptCode code = uscript_getScript(c, &error);
+
+      switch (code)
+      {
+      case USCRIPT_INHERITED:
+        return previous_script;
+      case USCRIPT_COMMON:
+      {
+        // For common characters, we return previous_script if it is included in
+        // their script extensions.
+        UScriptCode extensions[USCRIPT_CODE_LIMIT];
+        int num_extensions = uscript_getScriptExtensions(c, extensions, USCRIPT_CODE_LIMIT, &error);
+        for (int i = 0; i < num_extensions; ++i)
+        {
+          if (extensions[i] == previous_script)
+            return previous_script;
+        }
+        return extensions[0];
+      }
+      default:
+        return code;
+      }
     }
 
   }

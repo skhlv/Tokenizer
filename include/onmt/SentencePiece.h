@@ -1,15 +1,18 @@
 #pragma once
 
+#include <memory>
 #include <string>
 
 #include "onmt/opennmttokenizer_export.h"
 #include "onmt/SubwordEncoder.h"
 
+namespace sentencepiece
+{
+  class SentencePieceProcessor;
+}
+
 namespace onmt
 {
-
-  // Use the PImpl idiom to hide the sentencepiece dependency.
-  class OPENNMTTOKENIZER_EXPORT SentencePieceProcessor;
 
   class OPENNMTTOKENIZER_EXPORT SentencePiece: public SubwordEncoder
   {
@@ -18,15 +21,17 @@ namespace onmt
     SentencePiece(const std::string& model_path, int nbest_size, float alpha);
     ~SentencePiece();
 
-    void set_vocabulary(const std::vector<std::string>& vocabulary) override;
+    void update_tokenization_options(Tokenizer::Options& options) const override;
+    void set_vocabulary(const std::vector<std::string>& vocabulary,
+                        const Tokenizer::Options* options = nullptr) override;
     void reset_vocabulary() override;
     void enable_regularization(int nbest_size, float alpha);
 
-    std::vector<std::string> encode(const std::string& str) const override;
-    std::vector<AnnotatedToken> encode_and_annotate(const AnnotatedToken& token) const override;
+    std::vector<std::string> encode(const std::string& str, bool training = true) const override;
+    std::vector<Token> encode_and_annotate(const Token& token, bool training = true) const override;
 
   private:
-    SentencePieceProcessor* _processor;
+    const std::unique_ptr<sentencepiece::SentencePieceProcessor> _processor;
     int _nbest_size;
     float _alpha;
   };

@@ -1,43 +1,44 @@
 #include <iostream>
 
-#include <boost/program_options.hpp>
-#include <boost/algorithm/string.hpp>
+#include <cxxopts.hpp>
 
 #include <onmt/Tokenizer.h>
 
-namespace po = boost::program_options;
-
 int main(int argc, char* argv[])
 {
-  po::options_description desc("Detokenization");
-  desc.add_options()
-    ("help", "display available options")
-    ("joiner", po::value<std::string>()->default_value(onmt::Tokenizer::joiner_marker), "character used to annotate joiners")
-    ("spacer_annotate", po::bool_switch()->default_value(false), "detokenize on spacers")
-    ("case_feature", po::bool_switch()->default_value(false), "first feature is the case")
+  cxxopts::Options cmd_options("detokenize");
+  cmd_options.add_options()
+    ("h,help", "Show this help")
+    ("lang", "ISO language code of the input",
+     cxxopts::value<std::string>()->default_value(""))
+    ("joiner", "Set the joiner token",
+     cxxopts::value<std::string>()->default_value(onmt::Tokenizer::joiner_marker))
+    ("spacer_annotate", "Run spacer detokenization instead of joiner detokenization",
+     cxxopts::value<bool>()->default_value("false"))
+    ("case_feature", "Apply the generated case feature",
+     cxxopts::value<bool>()->default_value("false"))
+    ("with_separators", "Declare that the tokenized input contains separator tokens",
+     cxxopts::value<bool>()->default_value("false"))
+    ("tokens_delimiter", "String delimiting the tokens",
+     cxxopts::value<std::string>()->default_value(" "))
     ;
 
-  po::variables_map vm;
-  po::store(po::parse_command_line(argc, argv, desc), vm);
-  po::notify(vm);
+  auto vm = cmd_options.parse(argc, argv);
 
   if (vm.count("help"))
   {
-    std::cerr << desc << std::endl;
-    return 1;
+    std::cout << cmd_options.help() << std::endl;
+    return 0;
   }
 
-  int flags = 0;
-  if (vm["case_feature"].as<bool>())
-    flags |= onmt::Tokenizer::Flags::CaseFeature;
-  if (vm["spacer_annotate"].as<bool>())
-    flags |= onmt::Tokenizer::Flags::SpacerAnnotate;
+  onmt::Tokenizer::Options options;
+  options.lang = vm["lang"].as<std::string>();
+  options.case_feature = vm["case_feature"].as<bool>();
+  options.spacer_annotate = vm["spacer_annotate"].as<bool>();
+  options.joiner = vm["joiner"].as<std::string>();
+  options.with_separators = vm["with_separators"].as<bool>();
+  onmt::Tokenizer tokenizer(std::move(options));
 
-  onmt::Tokenizer tokenizer(onmt::Tokenizer::Mode::Conservative,
-                            flags,
-                            "",
-                            vm["joiner"].as<std::string>());
-
-  tokenizer.detokenize_stream(std::cin, std::cout);
+  tokenizer.detokenize_stream(std::cin, std::cout, vm["tokens_delimiter"].as<std::string>());
   return 0;
 }

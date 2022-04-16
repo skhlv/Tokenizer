@@ -15,11 +15,10 @@ namespace onmt
   {
   }
 
-  void SubwordLearner::ingest_token(const AnnotatedToken& token)
+  void SubwordLearner::ingest_token(const Token& token)
   {
-    const std::string& surface = token.str();
-    if (!surface.empty() && !Tokenizer::is_placeholder(surface))
-      ingest_token_impl(surface);
+    if (!token.empty() && !token.is_placeholder())
+      ingest_token_impl(token.surface);
   }
 
   void SubwordLearner::ingest_token(const std::string& token, const Tokenizer* tokenizer)
@@ -34,7 +33,7 @@ namespace onmt
     if (!tokenizer)
       tokenizer = _default_tokenizer.get();
 
-    std::vector<AnnotatedToken> tokens;
+    std::vector<Token> tokens;
     tokenizer->tokenize(text, tokens);
     for (const auto& token : tokens)
       ingest_token(token);
@@ -53,6 +52,11 @@ namespace onmt
     if (!out)
       throw std::invalid_argument("Failed to open model path " + model_path);
     learn(out, description, verbose);
+  }
+
+  const std::shared_ptr<const Tokenizer>& SubwordLearner::get_default_tokenizer() const
+  {
+    return _default_tokenizer;
   }
 
 }

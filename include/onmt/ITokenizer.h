@@ -23,12 +23,16 @@ namespace onmt
 
     virtual void tokenize(const std::string& text,
                           std::vector<std::string>& words,
-                          std::vector<std::vector<std::string> >& features) const = 0;
+                          std::vector<std::vector<std::string> >& features,
+                          bool training = true) const = 0;
     virtual void tokenize(const std::string& text,
                           std::vector<std::string>& words,
                           std::vector<std::vector<std::string> >& features,
-                          std::unordered_map<std::string, size_t>& alphabets) const;
-    virtual void tokenize(const std::string& text, std::vector<std::string>& words) const;
+                          std::unordered_map<std::string, size_t>& alphabets,
+                          bool training = true) const;
+    virtual void tokenize(const std::string& text,
+                          std::vector<std::string>& words,
+                          bool training = true) const;
 
     virtual std::string detokenize(const std::vector<std::string>& words,
                                    const std::vector<std::vector<std::string> >& features) const = 0;
@@ -39,18 +43,29 @@ namespace onmt
     virtual std::string detokenize(const std::vector<std::string>& words,
                                    Ranges& ranges, bool merge_ranges = false) const;
 
-    // Tokenize and use spaces as token separators.
-    virtual std::string tokenize(const std::string& text) const;
+    void tokenize_stream(std::istream& is,
+                         std::ostream& os,
+                         size_t num_threads = 1,
+                         bool verbose = false,
+                         bool training = true,
+                         const std::string& tokens_delimiter = " ",
+                         size_t buffer_size = 1000) const;
 
-    // Split the text on spaces and detokenize.
-    virtual std::string detokenize(const std::string& text) const;
-
-    virtual void tokenize_stream(std::istream& is,
-                                 std::ostream& os,
-                                 size_t num_threads = 1,
-                                 size_t buffer_size = 1000) const;
-
-    virtual void detokenize_stream(std::istream& is, std::ostream& os) const;
+    void detokenize_stream(std::istream& is,
+                           std::ostream& os,
+                           const std::string& tokens_delimiter = " ") const;
   };
+
+  void read_tokens(const std::string& line,
+                   std::vector<std::string>& tokens,
+                   std::vector<std::vector<std::string>>& features,
+                   const std::string& tokens_delimiter = " ");
+  void write_tokens(const std::vector<std::string>& tokens,
+                    const std::vector<std::vector<std::string>>& features,
+                    std::ostream& os,
+                    const std::string& tokens_delimiter = " ");
+  std::string write_tokens(const std::vector<std::string>& tokens,
+                           const std::vector<std::vector<std::string>>& features,
+                           const std::string& tokens_delimiter = " ");
 
 }

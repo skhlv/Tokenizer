@@ -1,4 +1,4 @@
-[![Build Status](https://api.travis-ci.org/OpenNMT/Tokenizer.svg?branch=master)](https://travis-ci.org/OpenNMT/Tokenizer) [![PyPI version](https://badge.fury.io/py/pyonmttok.svg)](https://badge.fury.io/py/pyonmttok)
+[![CI](https://github.com/OpenNMT/Tokenizer/workflows/CI/badge.svg)](https://github.com/OpenNMT/Tokenizer/actions?query=workflow%3ACI) [![PyPI version](https://badge.fury.io/py/pyonmttok.svg)](https://badge.fury.io/py/pyonmttok) [![Forum](https://img.shields.io/discourse/status?server=https%3A%2F%2Fforum.opennmt.net%2F)](https://forum.opennmt.net/)
 
 # Tokenizer
 
@@ -12,7 +12,7 @@ By default, the Tokenizer applies a simple tokenization based on Unicode types. 
 * **Subword tokenization**<br/>Support for training and using BPE and SentencePiece models.
 * **Advanced text segmentation**<br/>Split digits, segment on case or alphabet change, segment each character of selected alphabets, etc.
 * **Case management**<br/>Lowercase text and return case information as a separate feature or inject case modifier tokens.
-* **Protected sequences**<br/>Sequences can be protected against tokenization with the special characters "｟" and "｠".
+* **Protected sequences**<br/>Sequences can be protected against tokenization with the special characters ｟ and ｠.
 
 See the [available options](docs/options.md) for an overview of supported features.
 
@@ -29,7 +29,7 @@ pip install pyonmttok
 ```python
 >>> import pyonmttok
 >>> tokenizer = pyonmttok.Tokenizer("conservative", joiner_annotate=True)
->>> tokens, _ = tokenizer.tokenize("Hello World!")
+>>> tokens = tokenizer("Hello World!")
 >>> tokens
 ['Hello', 'World', '￭!']
 >>> tokenizer.detokenize(tokens)
@@ -69,30 +69,32 @@ See the `-h` flag to list the available options.
 
 ### Dependencies
 
-* (optional) [SentencePiece](https://github.com/google/sentencepiece)
-* (optional) [ICU](http://site.icu-project.org/)
-* (required by clients) [Boost](https://www.boost.org/) (`program_options`)
+* [ICU](http://site.icu-project.org/)
 
 ### Compiling
 
 *CMake and a compiler that supports the C++11 standard are required to compile the project.*
 
 ```
+git submodule update --init
 mkdir build
 cd build
-cmake -DCMAKE_BUILD_TYPE=<Release or Debug> ..
+cmake ..
 make
 ```
 
 It will produce the dynamic library `libOpenNMTTokenizer` and tokenization clients in `cli/`.
 
 * To compile only the library, use the `-DLIB_ONLY=ON` flag.
-* To compile with the ICU unicode backend, use the `-DWITH_ICU=ON` flag.
 
 ### Testing
 
 The tests are using [Google Test](https://github.com/google/googletest) which is included as a Git submodule. Run the tests with:
 
 ```
+mkdir build
+cd build
+cmake -DBUILD_TESTS=ON ..
+make
 test/onmt_tokenizer_test ../test/data
 ```
